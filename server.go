@@ -23,15 +23,25 @@ var myServer = Server{}
 
 // var interrupted bool = false
 
-var balance map[string]int                     // key: account, value: balance
-var transactions map[string][]string           // key: txid, value: txs
-var relevantAccount map[string]map[string]bool // key: txid, key: account, value: is used
+var balance map[string]int                     // record the balance for each account
+var transactions map[string][]string           // record the transactions and the operations in each transactions
+var AccountInvolved map[string][]string  	   // record the account involved in a certain transactions
 
-var txMtx sync.Mutex
-var balanceMtx sync.Mutex
-var balanceCpMtx sync.Mutex
-var connMtx sync.Mutex
-var relevantAccountMtx sync.Mutex
+var TxLock sync.Mutex		//lock for transactions
+var BlLock sync.Mutex		//lock for balance
+var AILock sync.Mutex			//lock for AccountInvolved
+// var balanceCpMtx sync.Mutex
+// var connMtx sync.Mutex
+// var relevantAccountMtx sync.Mutex
+
+func TxValid(ID string) bool {
+	for _,account := range AccountInvolved[ID] {
+		if balance[account] < 0 {
+			return false
+		}
+	}
+	return true
+}
 
 // message format: addr:port:id operation
 func handleConn(conn net.Conn) {
@@ -43,97 +53,93 @@ func handleConn(conn net.Conn) {
 			break
 		}
 		// fmt.Fprintf(os.Stderr, msg)
-		msg = msg[:len(msg)-1]
-		dat := strings.Split(msg, " ")
-		if _, found := relevantAccount[dat[0]]; !found {
-			relevantAccount[dat[0]] = make(map[string]bool)
+		if msg[len(msg)-1] == '\n'{
+			msg = msg[:len(msg)-1]
 		}
-		if _, foundTransaction := transactions[dat[0]]; !foundTransaction {
-			txMtx.Lock()
-			transactions[dat[0]] = make([]string, 0)
-			txMtx.Unlock()
+		op := strings.Split(msg, " ")
+		if _, mapExist := AccountInvolved[op[0]]; !mapExist {
+			AILock.Lock()
+			AccountInvolved[op[0]] = make([]string, 0)
+			AILock.Unlock()
+		}
+		if _, TxExist := transactions[op[0]]; !TxExist {
+			TxLock.Lock()
+			transactions[op[0]] = make([]string, 0)
+			TxLock.Unlock()
 		}
 		switch {
-		case dat[1] == "COMMIT":
-			if isValid(dat[0]) {
-				fmt.Fprintf(conn, dat[0]+" COMMIT OK\n")
+		case op[1] == "COMMIT":
+			if TxValid(op[0]) {
+				fmt.Fprintf(conn, op[0]+" COMMIT OK\n")
 			} else {
-				rollBack(transactions[dat[0]])
-				txMtx.Lock()
-				transactions[dat[0]] = make([]string, 0)
-				txMtx.Unlock()
-				fmt.Fprintf(conn, dat[0]+" ABORTED\n")
+				rollBack(op[0])
+				TxLock.Lock()
+				transactions[op[0]] = make([]string, 0)
+				TxLock.Unlock()
+				fmt.Fprintf(conn, op[0]+" ABORTED\n")
 			}
-		case dat[1] == "ABORT":
-			rollBack(transactions[dat[0]])
-			txMtx.Lock()
-			transactions[dat[0]] = make([]string, 0)
-			txMtx.Unlock()
-			fmt.Fprintf(conn, dat[0]+" ABORTED\n")
-		case dat[1] == "BALANCE": // txID BALANCE A.foo
-			fmt.Fprintf(conn, dat[0]+" "+dat[2]+" = "+strconv.Itoa(balance[dat[2]])+"\n")
-		case dat[1] == "DEPOSIT": // txID DEPOSIT A.foo 10
-			relevantAccountMtx.Lock()
+		case op[1] == "ABORT":
+			rollBack(op[0])
+			TxLock.Lock()
+			transactions[op[0]] = make([]string, 0)
+			TxLock.Unlock()
+			fmt.Fprintf(conn, op[0]+" ABORTED\n")
+		case op[1] == "BALANCE": // txID BALANCE A.foo
+			BlLock.Lock()
+			fmt.Fprintf(conn, op[0]+" "+op[2]+" = "+strconv.Itoa(balance[op[2]])+"\n")
+			BlLock.Unlock()
+		case op[1] == "DEPOSIT": // txID DEPOSIT A.foo 10
+			AILock.Lock()
+			AccountInvolved[op[0]] = append(AccountInvolved[op[0]], op[2])
+			AILock.Unlock()
 
-			relevantAccount[dat[0]][dat[2]] = true
-			relevantAccountMtx.Unlock()
+			amount, _ := strconv.Atoi(op[3])
+			BlLock.Lock()
+			balance[op[2]] += amount
+			BlLock.Unlock()
 
-			amount, _ := strconv.Atoi(dat[3])
-			balanceMtx.Lock()
-			balance[dat[2]] += amount
-			balanceMtx.Unlock()
-
-			txMtx.Lock()
-			transactions[dat[0]] = append(transactions[dat[0]], msg[len(dat[0])+1:])
-			n, e := fmt.Fprintf(conn, dat[0]+" OK\n")
+			TxLock.Lock()
+			transactions[op[0]] = append(transactions[op[0]], msg[len(op[0])+1:])
+			n, e := fmt.Fprintf(conn, op[0]+" OK\n")
 			fmt.Println("Sent message to service", n, e)
+			TxLock.Unlock()
 
-			txMtx.Unlock()
+		case op[1] == "WITHDRAW": // txID WITHDRAW B.bar 30
+			AILock.Lock()
+			AccountInvolved[op[0]] = append(AccountInvolved[op[0]], op[2])
+			AILock.Unlock()
 
-		case dat[1] == "WITHDRAW": // txID WITHDRAW B.bar 30
-			relevantAccountMtx.Lock()
-			relevantAccount[dat[0]][dat[2]] = true
-			relevantAccountMtx.Unlock()
+			amount, _ := strconv.Atoi(op[3])
+			BlLock.Lock()
+			balance[op[2]] -= amount
+			BlLock.Unlock()
 
-			amount, _ := strconv.Atoi(dat[3])
-			balanceMtx.Lock()
-			balance[dat[2]] -= amount
-			balanceMtx.Unlock()
-
-			txMtx.Lock()
-			transactions[dat[0]] = append(transactions[dat[0]], msg[len(dat[0])+1:])
-			fmt.Fprintf(conn, dat[0]+" OK\n")
-			txMtx.Unlock()
+			TxLock.Lock()
+			transactions[op[0]] = append(transactions[op[0]], msg[len(op[0])+1:])
+			fmt.Fprintf(conn, op[0]+" OK\n")
+			TxLock.Unlock()
 		}
 	}
 }
 
-func rollBack(txList []string) {
-	txListLen := len(txList)
-	for i := txListLen - 1; i >= 0; i-- {
-		dat := strings.Split(txList[i], " ")
+func rollBack(ID string) {
+	List := transactions[ID]
+	length := len(List)
+	for i := length - 1; i >= 0; i-- {
+		op := strings.Split(List[i], " ")
 		switch {
-		case dat[0] == "DEPOSIT":
-			amount, _ := strconv.Atoi(dat[2])
-			balanceMtx.Lock()
-			balance[dat[1]] -= amount
-			balanceMtx.Unlock()
-		case dat[0] == "WITHDRAW":
-			amount, _ := strconv.Atoi(dat[2])
-			balanceMtx.Lock()
-			balance[dat[1]] += amount
-			balanceMtx.Unlock()
+		case op[0] == "DEPOSIT":
+			amount, _ := strconv.Atoi(op[2])
+			BlLock.Lock()
+			balance[op[1]] -= amount
+			BlLock.Unlock()
+		case op[0] == "WITHDRAW":
+			amount, _ := strconv.Atoi(op[2])
+			BlLock.Lock()
+			balance[op[1]] += amount
+			BlLock.Unlock()
 		}
 	}
-}
-
-func isValid(txID string) bool {
-	for k, v := range relevantAccount[txID] {
-		if balance[k] < 0 && v == true {
-			return false
-		}
-	}
-	return true
 }
 
 func initialize_serverInfo(name string, config string){
@@ -169,7 +175,7 @@ func main() {
 	// maps
 	balance = make(map[string]int)
 	transactions = make(map[string][]string)
-	relevantAccount = make(map[string]map[string]bool)
+	AccountInvolved  = make(map[string][]string)
 	// listen
 	ln, e := net.Listen("tcp", ":"+myServer.Port)
 	if e != nil {
