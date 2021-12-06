@@ -168,7 +168,7 @@ func main() {
 	// parameter
 	argv := os.Args[1:]
 	if len(argv) != 2 {
-		fmt.Fprintf(os.Stderr, "Server argument: ./server <NAME> <CONFIG FILE>\n")
+		fmt.Fprintf(os.Stderr, "Server argument: ./serve <NAME> <CONFIG FILE>\n")
 		os.Exit(1)
 	}
 	initialize_serverInfo(argv[0],argv[1])
