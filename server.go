@@ -26,10 +26,12 @@ var myServer = Server{}
 var balance map[string]int                     // record the balance for each account
 var transactions map[string][]string           // record the transactions and the operations in each transactions
 var AccountInvolved map[string][]string  	   // record the account involved in a certain transactions
+var AccountCreated map[string][]string		   // record the account created in a certain transactions
 
 var TxLock sync.Mutex		//lock for transactions
 var BlLock sync.Mutex		//lock for balance
-var AILock sync.Mutex			//lock for AccountInvolved
+var AILock sync.Mutex		//lock for AccountInvolved
+var ACLock sync.Mutex		//lock for AccountInvolved
 // var balanceCpMtx sync.Mutex
 // var connMtx sync.Mutex
 // var relevantAccountMtx sync.Mutex
@@ -57,12 +59,17 @@ func handleConn(conn net.Conn) {
 			msg = msg[:len(msg)-1]
 		}
 		op := strings.Split(msg, " ")
-		if _, mapExist := AccountInvolved[op[0]]; !mapExist {
+		if _, AIMapExist := AccountInvolved[op[0]]; !AIMapExist {
 			AILock.Lock()
 			AccountInvolved[op[0]] = make([]string, 0)
 			AILock.Unlock()
 		}
 		if _, TxExist := transactions[op[0]]; !TxExist {
+			TxLock.Lock()
+			transactions[op[0]] = make([]string, 0)
+			TxLock.Unlock()
+		}
+		if _, ACMapExist := transactions[op[0]]; !ACMapExist {
 			TxLock.Lock()
 			transactions[op[0]] = make([]string, 0)
 			TxLock.Unlock()
@@ -86,9 +93,24 @@ func handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, op[0]+" ABORTED\n")
 		case op[1] == "BALANCE": // txID BALANCE A.foo
 			BlLock.Lock()
-			fmt.Fprintf(conn, op[0]+" "+op[2]+" = "+strconv.Itoa(balance[op[2]])+"\n")
+			_, ok := balance[op[2]];
 			BlLock.Unlock()
+			if !ok {
+				rollBack(op[0])
+				fmt.Fprintf(conn, op[0]+" NOT FOUND, ABORTED\n")
+			}else {
+				BlLock.Lock()
+				fmt.Fprintf(conn, op[0]+" "+op[2]+" = "+strconv.Itoa(balance[op[2]])+"\n")
+				BlLock.Unlock()
+			}
 		case op[1] == "DEPOSIT": // txID DEPOSIT A.foo 10
+			BlLock.Lock()
+			_, ok := balance[op[2]];
+			BlLock.Unlock()
+			if !ok{
+				balance[op[2]] = 0
+				AccountCreated[op[0]] = append(AccountCreated[op[0]], op[2])
+			}
 			AILock.Lock()
 			AccountInvolved[op[0]] = append(AccountInvolved[op[0]], op[2])
 			AILock.Unlock()
@@ -105,26 +127,36 @@ func handleConn(conn net.Conn) {
 			TxLock.Unlock()
 
 		case op[1] == "WITHDRAW": // txID WITHDRAW B.bar 30
-			AILock.Lock()
-			AccountInvolved[op[0]] = append(AccountInvolved[op[0]], op[2])
-			AILock.Unlock()
-
-			amount, _ := strconv.Atoi(op[3])
 			BlLock.Lock()
-			balance[op[2]] -= amount
+			_, ok := balance[op[2]];
 			BlLock.Unlock()
-
-			TxLock.Lock()
-			transactions[op[0]] = append(transactions[op[0]], msg[len(op[0])+1:])
-			fmt.Fprintf(conn, op[0]+" OK\n")
-			TxLock.Unlock()
+			if !ok {
+				rollBack(op[0])
+				fmt.Fprintf(conn, op[0]+" NOT FOUND, ABORTED\n")
+			}else {
+				AILock.Lock()
+				AccountInvolved[op[0]] = append(AccountInvolved[op[0]], op[2])
+				AILock.Unlock()
+	
+				amount, _ := strconv.Atoi(op[3])
+				BlLock.Lock()
+				balance[op[2]] -= amount
+				BlLock.Unlock()
+	
+				TxLock.Lock()
+				transactions[op[0]] = append(transactions[op[0]], msg[len(op[0])+1:])
+				fmt.Fprintf(conn, op[0]+" OK\n")
+				TxLock.Unlock()
+			}
 		}
 	}
 }
 
 func rollBack(ID string) {
 	List := transactions[ID]
+	AccountList := AccountCreated[ID]
 	length := len(List)
+	AccountLen := len(AccountList)
 	for i := length - 1; i >= 0; i-- {
 		op := strings.Split(List[i], " ")
 		switch {
@@ -138,6 +170,12 @@ func rollBack(ID string) {
 			BlLock.Lock()
 			balance[op[1]] += amount
 			BlLock.Unlock()
+		}
+	}
+	for i := 0; i < AccountLen; i++ {
+		_, ok := balance[AccountList[i]];
+		if ok {
+			delete(balance, AccountList[i]);
 		}
 	}
 }
