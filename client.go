@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	// "os/signal"
 	// "syscall"
 )
@@ -22,18 +23,18 @@ func readFeedbackService(conn net.Conn) {
 	for {
 		feedback, readErr := reader.ReadString('\n')
 		if readErr != nil {
-			fmt.Fprintf(os.Stderr, "Client: Error reading feedback from server\n")
+			//fmt.Fprintf(os.Stderr, "Client: Error reading feedback from server\n")
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stdout, feedback)
 	}
 }
 
-func initialize_serverInfo(name string, config string){
+func initialize_ClientInfo(name string, config string){
 	ClientName = name
 	file, err := os.Open(config)
 	if err != nil{
-		fmt.Fprintf(os.Stderr, "can't open file!")
+		//fmt.Fprintf(os.Stderr, "can't open file!")
 		os.Exit(-1)
 	}
 	defer file.Close()
@@ -52,7 +53,7 @@ func initialize_serverInfo(name string, config string){
 func main() {
 	argv := os.Args[1:]
 	if len(argv) != 2 {
-		fmt.Fprintf(os.Stderr, "client argument: ./serve <NAME> <CONFIG FILE>\n")
+		//fmt.Fprintf(os.Stderr, "client argument: ./serve <NAME> <CONFIG FILE>\n")
 		os.Exit(1)
 	}
 	initialize_ClientInfo(argv[0],argv[1])
@@ -60,21 +61,17 @@ func main() {
 
 	conn, dialErr := net.Dial("tcp", COAddr+":"+COPort)
 	if dialErr != nil {
-		fmt.Fprintf(os.Stderr, "Client connection error\n")
+		//fmt.Fprintf(os.Stderr, "Client connection error\n")
 		os.Exit(1)
 	}
 
 	go readFeedbackService(conn)
 
 	for {
-		cmd, readErr := reader.ReadString('\n')
-		if readErr != nil {
-			fmt.Fprintf(os.Stderr, "Client: Error reading input\n")
-			os.Exit(1)
-		}
+		cmd, _ := reader.ReadString('\n')
 		_, writeErr := fmt.Fprintf(conn, "%s\n", cmd)
 		if writeErr != nil {
-			fmt.Fprintf(os.Stderr, "Client: Error writing to server\n")
+			//fmt.Fprintf(os.Stderr, "Client: Error writing to server\n")
 			os.Exit(1)
 		}
 	}

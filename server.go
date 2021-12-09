@@ -27,14 +27,13 @@ var balance map[string]int                     // record the balance for each ac
 var transactions map[string][]string           // record the transactions and the operations in each transactions
 var AccountInvolved map[string][]string  	   // record the account involved in a certain transactions
 var AccountCreated map[string][]string		   // record the account created in a certain transactions
+var TxAborted map[string]bool           	   // record wether the transactions has aborted
 
 var TxLock sync.Mutex		//lock for transactions
 var BlLock sync.Mutex		//lock for balance
 var AILock sync.Mutex		//lock for AccountInvolved
 var ACLock sync.Mutex		//lock for AccountInvolved
-// var balanceCpMtx sync.Mutex
-// var connMtx sync.Mutex
-// var relevantAccountMtx sync.Mutex
+var TxALock sync.Mutex   	//lock for TxAborted
 
 func TxValid(ID string) bool {
 	for _,account := range AccountInvolved[ID] {
@@ -50,9 +49,10 @@ func handleConn(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	for {
 		msg, err := reader.ReadString('\n')
-		fmt.Fprintf(os.Stderr, "Server "+myServer.Name +" received message: "+msg)
+		//fmt.Fprintf(os.Stderr, "Server "+myServer.Name +" received message: "+msg)
 		if err != nil {
-			break
+			//fmt.Fprintf(os.Stderr, "Server "+myServer.Name +" readstring error\n")
+			os.Exit(-1)
 		}
 		// fmt.Fprintf(os.Stderr, msg)
 		if msg[len(msg)-1] == '\n'{
@@ -68,6 +68,9 @@ func handleConn(conn net.Conn) {
 			TxLock.Lock()
 			transactions[op[0]] = make([]string, 0)
 			TxLock.Unlock()
+			TxALock.Lock()
+			TxAborted[op[0]] = false
+			TxALock.Unlock()
 		}
 		if _, ACMapExist := transactions[op[0]]; !ACMapExist {
 			TxLock.Lock()
@@ -79,6 +82,9 @@ func handleConn(conn net.Conn) {
 			if TxValid(op[0]) {
 				fmt.Fprintf(conn, op[0]+" COMMIT OK\n")
 			} else {
+				TxALock.Lock()
+				TxAborted[op[0]] = true
+				TxALock.Unlock()
 				rollBack(op[0])
 				TxLock.Lock()
 				transactions[op[0]] = make([]string, 0)
@@ -86,16 +92,24 @@ func handleConn(conn net.Conn) {
 				fmt.Fprintf(conn, op[0]+" ABORTED\n")
 			}
 		case op[1] == "ABORT":
-			rollBack(op[0])
-			TxLock.Lock()
-			transactions[op[0]] = make([]string, 0)
-			TxLock.Unlock()
-			fmt.Fprintf(conn, op[0]+" ABORTED\n")
+			TxALock.Lock()
+			if !TxAborted[op[0]]{
+				TxAborted[op[0]] = true
+				rollBack(op[0])
+				TxLock.Lock()
+				transactions[op[0]] = make([]string, 0)
+				TxLock.Unlock()
+				fmt.Fprintf(conn, op[0]+" ABORTED\n")
+			}
+			TxALock.Unlock()
 		case op[1] == "BALANCE": // txID BALANCE A.foo
 			BlLock.Lock()
 			_, ok := balance[op[2]];
 			BlLock.Unlock()
 			if !ok {
+				TxALock.Lock()
+				TxAborted[op[0]] = true
+				TxALock.Unlock()
 				rollBack(op[0])
 				fmt.Fprintf(conn, op[0]+" NOT FOUND, ABORTED\n")
 			}else {
@@ -131,6 +145,9 @@ func handleConn(conn net.Conn) {
 			_, ok := balance[op[2]];
 			BlLock.Unlock()
 			if !ok {
+				TxALock.Lock()
+				TxAborted[op[0]] = true
+				TxALock.Unlock()
 				rollBack(op[0])
 				fmt.Fprintf(conn, op[0]+" NOT FOUND, ABORTED\n")
 			}else {
@@ -184,7 +201,7 @@ func initialize_serverInfo(name string, config string){
 	myServer.Name = name
 	file, err := os.Open(config)
 	if err != nil{
-		fmt.Fprintf(os.Stderr, "can't open file!")
+		//fmt.Fprintf(os.Stderr, "can't open file!")
 		os.Exit(-1)
 	}
 	defer file.Close()
@@ -198,7 +215,7 @@ func initialize_serverInfo(name string, config string){
 			break
 		}
 	}
-	fmt.Fprintf(os.Stdout, "Server %s with address %s and port %s starts", myServer.Name, myServer.Addr, myServer.Port)
+	//fmt.Fprintf(os.Stdout, "Server %s with address %s and port %s \n", myServer.Name, myServer.Addr, myServer.Port)
 }
 
 func main() {
@@ -206,7 +223,7 @@ func main() {
 	// parameter
 	argv := os.Args[1:]
 	if len(argv) != 2 {
-		fmt.Fprintf(os.Stderr, "Server argument: ./serve <NAME> <CONFIG FILE>\n")
+		//fmt.Fprintf(os.Stderr, "Server argument: ./serve <NAME> <CONFIG FILE>\n")
 		os.Exit(1)
 	}
 	initialize_serverInfo(argv[0],argv[1])
@@ -214,17 +231,20 @@ func main() {
 	balance = make(map[string]int)
 	transactions = make(map[string][]string)
 	AccountInvolved  = make(map[string][]string)
+	AccountCreated = make(map[string][]string)
+	TxAborted = make(map[string]bool)
 	// listen
 	ln, e := net.Listen("tcp", ":"+myServer.Port)
 	if e != nil {
-		fmt.Fprintf(os.Stderr, "Server listen error\n")
+		//fmt.Fprintf(os.Stderr, "Server listen error\n")
 		os.Exit(1)
 	}
 	conn, acceptErr := ln.Accept()
 	if acceptErr != nil {
-		fmt.Fprintf(os.Stderr, "Server accept error\n")
+		//fmt.Fprintf(os.Stderr, "Server accept error\n")
 		os.Exit(1)
 	}
 	// handleConn
 	handleConn(conn)
 }
+
